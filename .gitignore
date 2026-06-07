@@ -1,0 +1,14 @@
+# Dependency directories
+node_modules/
+
+# Local configuration files (contains passwords)
+.env
+
+# Built client assets (generated during deployment)
+client/dist/
+
+# Local cache / data
+.eslintcache
+.tmp
+server/data/
+*.log

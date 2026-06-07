@@ -26,6 +26,12 @@ function App() {
   const [error, setError] = useState(null);
   const [isOnline, setIsOnline] = useState(false);
   
+  // Authentication State
+  const [user, setUser] = useState(null);
+  const [token, setToken] = useState(localStorage.getItem('token') || '');
+  const [googleClientId, setGoogleClientId] = useState('');
+  const [authLoading, setAuthLoading] = useState(true);
+
   // Search, Filters & Sorting
   const [searchQuery, setSearchQuery] = useState('');
   const [filterStatus, setFilterStatus] = useState('all'); // 'all', 'active', 'completed'
@@ -46,13 +52,24 @@ function App() {
   const [validationError, setValidationError] = useState('');
 
   // Fetch todos from Express backend
-  const fetchTodos = async () => {
+  const fetchTodos = async (activeToken) => {
+    const apiToken = activeToken || token;
+    if (!apiToken) return;
+
     try {
-      const response = await fetch('/api/todos');
+      const response = await fetch('/api/todos', {
+        headers: {
+          'Authorization': `Bearer ${apiToken}`
+        }
+      });
+      if (response.status === 401 || response.status === 403) {
+        handleLogout();
+        return;
+      }
       if (!response.ok) {
         throw new Error(`Server responded with ${response.status}`);
       }
-      const data = await response.ok ? await response.json() : [];
+      const data = await response.json();
       setTodos(data);
       setIsOnline(true);
       setError(null);
@@ -65,12 +82,119 @@ function App() {
     }
   };
 
+  // Sync user info if token exists
   useEffect(() => {
-    fetchTodos();
-    // Poll the backend connection status every 10 seconds
-    const interval = setInterval(fetchTodos, 10000);
-    return () => clearInterval(interval);
+    const storedUser = localStorage.getItem('user');
+    if (storedUser && token) {
+      setUser(JSON.parse(storedUser));
+    }
+  }, [token]);
+
+  // Fetch Google Client ID on mount
+  useEffect(() => {
+    const fetchGoogleClientId = async () => {
+      try {
+        const response = await fetch('/api/config/google-client-id');
+        const data = await response.json();
+        setGoogleClientId(data.googleClientId);
+      } catch (err) {
+        console.error('Failed to load Google Client ID config:', err);
+      } finally {
+        setAuthLoading(false);
+      }
+    };
+    fetchGoogleClientId();
   }, []);
+
+  // Initialize Google Sign-In button
+  useEffect(() => {
+    if (token || !googleClientId) return;
+
+    const initializeGoogleSignIn = () => {
+      if (window.google && window.google.accounts) {
+        window.google.accounts.id.initialize({
+          client_id: googleClientId,
+          callback: handleGoogleLoginSuccess
+        });
+        
+        const container = document.getElementById("google-signin-btn");
+        if (container) {
+          window.google.accounts.id.renderButton(container, {
+            theme: "outline",
+            size: "large",
+            width: 280,
+            shape: "pill"
+          });
+        }
+      }
+    };
+
+    if (!window.google) {
+      const checkInterval = setInterval(() => {
+        if (window.google) {
+          clearInterval(checkInterval);
+          initializeGoogleSignIn();
+        }
+      }, 200);
+      return () => clearInterval(checkInterval);
+    } else {
+      initializeGoogleSignIn();
+    }
+  }, [token, googleClientId]);
+
+  // Handle Google authentication success callback
+  const handleGoogleLoginSuccess = async (googleResponse) => {
+    try {
+      setLoading(true);
+      setError(null);
+      
+      const authRes = await fetch('/api/auth/google', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credential: googleResponse.credential })
+      });
+      
+      if (!authRes.ok) {
+        const errorData = await authRes.json();
+        throw new Error(errorData.error || 'Google Authentication failed');
+      }
+      
+      const authData = await authRes.json();
+      
+      localStorage.setItem('token', authData.token);
+      localStorage.setItem('user', JSON.stringify(authData.user));
+      
+      setToken(authData.token);
+      setUser(authData.user);
+      setIsOnline(true);
+      
+      await fetchTodos(authData.token);
+    } catch (err) {
+      console.error('Login error:', err);
+      setError(err.message || 'Failed to authenticate with Google. Please try again.');
+      handleLogout();
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Perform logout operations
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    setToken('');
+    setUser(null);
+    setTodos([]);
+  };
+
+  // Poll for changes when logged in
+  useEffect(() => {
+    if (token) {
+      fetchTodos(token);
+      const interval = setInterval(() => fetchTodos(token), 10000);
+      return () => clearInterval(interval);
+    }
+  }, [token]);
 
   // Open modal for adding a new task
   const handleOpenAddModal = () => {
@@ -117,7 +241,10 @@ function App() {
         // Update Action
         const response = await fetch(`/api/todos/${editingTodo.id}`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
           body: JSON.stringify(payload)
         });
         if (!response.ok) throw new Error('Failed to update task');
@@ -127,7 +254,10 @@ function App() {
         // Create Action
         const response = await fetch('/api/todos', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
           body: JSON.stringify(payload)
         });
         if (!response.ok) throw new Error('Failed to create task');
@@ -151,7 +281,10 @@ function App() {
 
       const response = await fetch(`/api/todos/${todo.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
         body: JSON.stringify({ completed: nextStatus })
       });
       
@@ -176,7 +309,10 @@ function App() {
       setTodos(prev => prev.filter(t => t.id !== id));
 
       const response = await fetch(`/api/todos/${id}`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
       });
 
       if (!response.ok) {
@@ -295,6 +431,59 @@ function App() {
     return due < now;
   };
 
+  if (!token) {
+    return (
+      <div className="login-container animate-fade-in">
+        {/* Abstract Glowing Background Blobs */}
+        <div className="glow-blob blob-1"></div>
+        <div className="glow-blob blob-2"></div>
+        <div className="glow-blob blob-3"></div>
+
+        <div className="glass-panel login-card">
+          <div className="login-branding">
+            <div className="logo-icon large animate-pulse">
+              <ListTodo size={32} />
+            </div>
+            <h1 className="login-title">VeloTodo</h1>
+            <p className="login-subtitle">Premium Task Orchestration Engine</p>
+          </div>
+
+          <div className="login-divider"></div>
+
+          <div className="login-body">
+            <p className="login-description">
+              Securely orchestrate, filter, and track your daily priorities using Google OAuth 2.0 and JWT authorization.
+            </p>
+
+            {error && (
+              <div className="login-error-message">
+                <AlertCircle size={16} />
+                <span>{error}</span>
+              </div>
+            )}
+
+            {authLoading ? (
+              <div className="login-loading">Loading encryption keys...</div>
+            ) : googleClientId ? (
+              <div className="google-btn-wrapper">
+                <div id="google-signin-btn"></div>
+              </div>
+            ) : (
+              <div className="login-error-message">
+                <AlertCircle size={16} />
+                <span>Google Client ID is missing. Please set GOOGLE_CLIENT_ID on the backend server.</span>
+              </div>
+            )}
+          </div>
+
+          <div className="login-footer">
+            <span>Secured with AES-256 equivalent JSON Web Tokens</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <>
       {/* Header Bar */}
@@ -309,6 +498,20 @@ function App() {
           </div>
         </div>
         
+        {/* User profile details and logout option */}
+        {user && (
+          <div className="user-profile-widget">
+            <img className="user-avatar" src={user.picture} alt={user.name} referrerPolicy="no-referrer" />
+            <div className="user-info">
+              <span className="user-name">{user.name}</span>
+              <span className="user-email">{user.email}</span>
+            </div>
+            <button className="btn btn-secondary logout-btn" onClick={handleLogout}>
+              Logout
+            </button>
+          </div>
+        )}
+
         <div className="connection-status">
           <span className={`status-dot ${isOnline ? 'online' : ''}`}></span>
           <span>{isOnline ? 'Connected' : 'Offline Mode'}</span>

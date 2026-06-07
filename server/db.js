@@ -1,7 +1,42 @@
 import mongoose from 'mongoose';
 
+// Define the Schema for User Accounts
+const userSchema = new mongoose.Schema({
+  email: { 
+    type: String, 
+    required: true, 
+    unique: true,
+    trim: true,
+    lowercase: true
+  },
+  name: { 
+    type: String,
+    trim: true
+  },
+  googleId: { 
+    type: String, 
+    required: true,
+    unique: true
+  },
+  picture: { 
+    type: String,
+    trim: true
+  },
+  createdAt: { 
+    type: Date, 
+    default: Date.now 
+  }
+});
+
+const User = mongoose.model('User', userSchema);
+
 // Define the Schema for Todo Tasks
 const todoSchema = new mongoose.Schema({
+  user: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: false // Set to false to support migration of legacy data
+  },
   title: { 
     type: String, 
     required: true, 
@@ -71,4 +106,5 @@ export async function connectDB(uri) {
   }
 }
 
-export { Todo };
+export { Todo, User };
+
